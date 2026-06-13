@@ -17,6 +17,7 @@ import {
   Send,
   ChevronLeft,
   ChevronRight,
+  Navigation,
 } from "lucide";
 
 createIcons({
@@ -29,6 +30,7 @@ createIcons({
     Send,
     ChevronLeft,
     ChevronRight,
+    Navigation,
   },
 });
 
@@ -55,6 +57,8 @@ let dynamicMarkersMap = [];
 let selectedCoords = null;
 let activeRestaurantId = null;
 let currentSlide = 0;
+
+let activeRoutingLine = null; // <-- Holds the navigation path layer
 
 const modal = document.getElementById("restaurantModal");
 const modalContent = modal.querySelector(".bg-white");
@@ -85,6 +89,29 @@ const restaurantIcon = L.divIcon({
 });
 
 // 3. ENGINE ROUTINES
+// function initApp() {
+//   if (!navigator.geolocation) {
+//     alert("Location scanning unavailable on this configuration setup.");
+//     loadMap(51.505, -0.09);
+//     return;
+//   }
+
+//   navigator.geolocation.getCurrentPosition(
+//     (position) => {
+//       userCoords.lat = position.coords.latitude;
+//       userCoords.lng = position.coords.longitude;
+//       loadMap(userCoords.lat, userCoords.lng);
+//     },
+//     () => {
+//       alert(
+//         "Location access denied or timed out. Defaulting to fallback center coordinates.",
+//       );
+//       userCoords = { lat: 37.7749, lng: -122.4194 };
+//       loadMap(userCoords.lat, userCoords.lng);
+//     },
+//     { enableHighAccuracy: true, timeout: 9000 },
+//   );
+// }
 function initApp() {
   if (!navigator.geolocation) {
     alert("Location scanning unavailable on this configuration setup.");
@@ -92,20 +119,48 @@ function initApp() {
     return;
   }
 
-  navigator.geolocation.getCurrentPosition(
+  // Best practice: watchPosition monitors location changes in real time
+  navigator.geolocation.watchPosition(
     (position) => {
       userCoords.lat = position.coords.latitude;
       userCoords.lng = position.coords.longitude;
-      loadMap(userCoords.lat, userCoords.lng);
+
+      if (!map) {
+        // First boot initialize configuration
+        loadMap(userCoords.lat, userCoords.lng);
+      } else {
+        // Dynamically shift user anchor and bounding circle radius targets
+        if (userLocationMarker)
+          userLocationMarker.setLatLng([userCoords.lat, userCoords.lng]);
+        if (rangeCircle)
+          rangeCircle.setLatLng([userCoords.lat, userCoords.lng]);
+
+        // Recalculate which markers fall within the updated location radius
+        renderFilteredMarkers();
+
+        // Dynamic path recalculation fallback update loop if navigation is active
+        if (activeRoutingLine) {
+          const targetLatLng = activeRoutingLine.getLatLngs()[1];
+          if (targetLatLng) {
+            activeRoutingLine.setLatLngs([
+              [userCoords.lat, userCoords.lng],
+              targetLatLng,
+            ]);
+          }
+        }
+      }
     },
     () => {
-      alert(
-        "Location access denied or timed out. Defaulting to fallback center coordinates.",
-      );
-      userCoords = { lat: 37.7749, lng: -122.4194 };
-      loadMap(userCoords.lat, userCoords.lng);
+      if (!map) {
+        alert(
+          "Location access denied or timed out. Defaulting to fallback center coordinates.",
+        );
+        // userCoords = { lat: 37.7749, lng: -122.4194 };
+        userCoords = { lat: 6.4474, lng: 3.3903 };
+        loadMap(userCoords.lat, userCoords.lng);
+      }
     },
-    { enableHighAccuracy: true, timeout: 9000 },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
   );
 }
 
@@ -193,6 +248,35 @@ function renderFilteredMarkers() {
   });
 }
 
+// function handleCoordinateSelection(lat, lng, existingRecord = null) {
+//   selectedCoords = { lat, lng };
+//   document.getElementById("addRestaurantForm").classList.add("hidden");
+//   document.getElementById("viewRestaurantDetails").classList.add("hidden");
+
+//   if (!existingRecord) {
+//     existingRecord = dbRestaurants.find(
+//       (r) => Math.abs(r.lat - lat) < 0.0001 && Math.abs(r.lng - lng) < 0.0001,
+//     );
+//   }
+
+//   if (existingRecord) {
+//     activeRestaurantId = existingRecord.id;
+//     document.getElementById("modalTitle").innerText = existingRecord.name;
+//     document.getElementById("modalSub").innerText =
+//       existingRecord.address || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+//     document.getElementById("viewReviewText").innerText = existingRecord.review;
+//     document.getElementById("viewRestaurantDetails").classList.remove("hidden");
+//     fetchComments(activeRestaurantId);
+//   } else {
+//     activeRestaurantId = null;
+//     document.getElementById("modalTitle").innerText = "Add New Location";
+//     document.getElementById("modalSub").innerText =
+//       `Coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+//     document.getElementById("addRestaurantForm").reset();
+//     document.getElementById("addRestaurantForm").classList.remove("hidden");
+//   }
+//   openModal();
+// }
 function handleCoordinateSelection(lat, lng, existingRecord = null) {
   selectedCoords = { lat, lng };
   document.getElementById("addRestaurantForm").classList.add("hidden");
@@ -210,7 +294,29 @@ function handleCoordinateSelection(lat, lng, existingRecord = null) {
     document.getElementById("modalSub").innerText =
       existingRecord.address || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
     document.getElementById("viewReviewText").innerText = existingRecord.review;
-    document.getElementById("viewRestaurantDetails").classList.remove("hidden");
+
+    // Target insertion clean injection layer container element mapping
+    const detailsContainer = document.getElementById("viewRestaurantDetails");
+
+    // Clear out any stale route action buttons before re-rendering
+    const staleBtn = document.getElementById("modalNavBtn");
+    if (staleBtn) staleBtn.remove();
+
+    // Inject the navigation button at the top of the details view state panel
+    const navBtnHtml = `
+      <button id="modalNavBtn" class="w-full mb-2 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-medium py-2.5 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 transition-all text-sm">
+        <i data-lucide="navigation" class="w-4 h-4 fill-white"></i> Get Directions
+      </button>
+    `;
+    detailsContainer.insertAdjacentHTML("afterbegin", navBtnHtml);
+    createIcons(); // Refresh Lucide icons for the newly injected element
+
+    // Bind execution handler routine to the new button
+    document.getElementById("modalNavBtn").addEventListener("click", () => {
+      drawNavigationRoute(existingRecord.lat, existingRecord.lng);
+    });
+
+    detailsContainer.classList.remove("hidden");
     fetchComments(activeRestaurantId);
   } else {
     activeRestaurantId = null;
@@ -395,6 +501,38 @@ function escapeHTML(str) {
         t
       ] || t,
   );
+}
+
+function drawNavigationRoute(targetLat, targetLng) {
+  // 1. Wipe out any active path lines currently rendering on the canvas
+  if (activeRoutingLine) {
+    map.removeLayer(activeRoutingLine);
+    activeRoutingLine = null;
+  }
+
+  // 2. Generate a Leaflet polyline layer array matching coordinates metrics points
+  const pointsArray = [
+    [userCoords.lat, userCoords.lng],
+    [targetLat, targetLng],
+  ];
+
+  // 3. Create and style the path line
+  activeRoutingLine = L.polyline(pointsArray, {
+    color: "#2563eb", // Tailwind blue-600 color match theme profile
+    weight: 4, // Line thickness
+    opacity: 0.8, // Transparency profile
+    dashArray: "10, 8", // Creates a clean, modern dashed navigation effect
+    lineCap: "round",
+  }).addTo(map);
+
+  // 4. Dismiss modal to show the route map layout
+  closeModal();
+
+  // 5. Adjust the map bounds to neatly fit the entire route on screen
+  map.fitBounds(activeRoutingLine.getBounds(), {
+    padding: [60, 60], // Safe margin spacing in pixels around screen boundaries
+    maxZoom: 16, // Prevents over-zooming on exceptionally short routes
+  });
 }
 
 window.onload = initApp;
