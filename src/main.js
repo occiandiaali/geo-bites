@@ -1,12 +1,6 @@
 import "./styles.css";
 import { createClient } from "@supabase/supabase-js";
 import L from "leaflet";
-
-// import { createIcons, icons } from "lucide";
-
-// // 1. INITIALIZE ICONSETS & ENV CONTROLS
-// createIcons({icons});
-// Optimized Alternative (Optional)
 import {
   createIcons,
   MapPin,
@@ -18,9 +12,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Navigation,
+  WifiOff,
+  MapPinOff,
 } from "lucide";
 
-createIcons({
+// 1. INITIALIZE ICONSETS
+const iconConfig = {
   icons: {
     MapPin,
     Layers,
@@ -31,34 +28,29 @@ createIcons({
     ChevronLeft,
     ChevronRight,
     Navigation,
+    WifiOff,
+    MapPinOff,
   },
-});
+};
+createIcons(iconConfig);
 
+// 2. SUPABASE INITIALIZATION
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-// Solves the redeclaration error entirely
 const supabaseClient =
   supabaseUrl && supabaseAnonKey
     ? createClient(supabaseUrl, supabaseAnonKey)
     : null;
 
-if (!supabaseClient) {
-  console.warn(
-    "⚠️ Supabase credentials missing. Running in local fallback mockup mode.",
-  );
-}
-
-// 2. CONFIG VARIABLE STATE
+// 3. APPLICATION STATE
 let map, userLocationMarker, rangeCircle;
 let userCoords = { lat: 0, lng: 0 };
 let dbRestaurants = [];
-let dynamicMarkersMap = [];
+let activeMarkersMap = new Map();
+let activeRoutingLine = null;
 let selectedCoords = null;
 let activeRestaurantId = null;
 let currentSlide = 0;
-
-let activeRoutingLine = null; // <-- Holds the navigation path layer
 
 const modal = document.getElementById("restaurantModal");
 const modalContent = modal.querySelector(".bg-white");
@@ -66,7 +58,10 @@ const radiusSlider = document.getElementById("radiusSlider");
 const radiusVal = document.getElementById("radiusVal");
 const carouselTrack = document.getElementById("carouselTrack");
 
-// Custom Marker Nodes Layout
+// Alert Layout Dom Hook references
+const offlineAlert = document.getElementById("offlineAlert");
+const gpsAlert = document.getElementById("gpsAlert");
+
 const userIcon = L.divIcon({
   html: `<div class="relative flex items-center justify-center"><div class="absolute w-8 h-8 bg-blue-500/30 rounded-full animate-ping"></div><div class="w-4 h-4 bg-blue-600 border-2 border-white rounded-full shadow-lg"></div></div>`,
   className: "",
@@ -85,60 +80,68 @@ const restaurantIcon = L.divIcon({
   `,
   className: "",
   iconSize: [36, 36],
-  iconAnchor: [18, 36], // Anchor at the bottom tip of the pin
+  iconAnchor: [18, 36],
 });
 
-// 3. ENGINE ROUTINES
-// function initApp() {
-//   if (!navigator.geolocation) {
-//     alert("Location scanning unavailable on this configuration setup.");
-//     loadMap(51.505, -0.09);
-//     return;
-//   }
+// =========================================================================
+// 4. NETWORK & CONNECTIVITY DIAGNOSTICS LOGIC (NEW)
+// =========================================================================
+function toggleAlertNotification(element, show) {
+  if (show) {
+    element.classList.remove("hidden");
+    setTimeout(
+      () => element.classList.remove("-translate-y-4", "opacity-0"),
+      10,
+    );
+  } else {
+    element.classList.add("-translate-y-4", "opacity-0");
+    setTimeout(() => element.classList.add("hidden"), 300);
+  }
+}
 
-//   navigator.geolocation.getCurrentPosition(
-//     (position) => {
-//       userCoords.lat = position.coords.latitude;
-//       userCoords.lng = position.coords.longitude;
-//       loadMap(userCoords.lat, userCoords.lng);
-//     },
-//     () => {
-//       alert(
-//         "Location access denied or timed out. Defaulting to fallback center coordinates.",
-//       );
-//       userCoords = { lat: 37.7749, lng: -122.4194 };
-//       loadMap(userCoords.lat, userCoords.lng);
-//     },
-//     { enableHighAccuracy: true, timeout: 9000 },
-//   );
-// }
+window.addEventListener("online", () => {
+  toggleAlertNotification(offlineAlert, false);
+  fetchRestaurants(); // Automatically re-sync data when connection returns
+});
+
+window.addEventListener("offline", () => {
+  toggleAlertNotification(offlineAlert, true);
+});
+
+// Run an initial telemetry sweep on launch
+if (!navigator.onLine) {
+  toggleAlertNotification(offlineAlert, true);
+}
+
+// =========================================================================
+// 5. GEOLOCATION MONITORING ENGINE
+// =========================================================================
 function initApp() {
   if (!navigator.geolocation) {
     alert("Location scanning unavailable on this configuration setup.");
-    loadMap(51.505, -0.09);
+    // loadMap(51.505, -0.09);
+    //loadMap(6.5965, 3.342);
+    loadMap(6.6392, 3.3677);
     return;
   }
 
-  // Best practice: watchPosition monitors location changes in real time
   navigator.geolocation.watchPosition(
     (position) => {
+      // Hide geolocation tracking alerts if live GPS connection is healthy
+      toggleAlertNotification(gpsAlert, false);
+
       userCoords.lat = position.coords.latitude;
       userCoords.lng = position.coords.longitude;
 
       if (!map) {
-        // First boot initialize configuration
         loadMap(userCoords.lat, userCoords.lng);
       } else {
-        // Dynamically shift user anchor and bounding circle radius targets
         if (userLocationMarker)
           userLocationMarker.setLatLng([userCoords.lat, userCoords.lng]);
         if (rangeCircle)
           rangeCircle.setLatLng([userCoords.lat, userCoords.lng]);
-
-        // Recalculate which markers fall within the updated location radius
         renderFilteredMarkers();
 
-        // Dynamic path recalculation fallback update loop if navigation is active
         if (activeRoutingLine) {
           const targetLatLng = activeRoutingLine.getLatLngs()[1];
           if (targetLatLng) {
@@ -150,13 +153,16 @@ function initApp() {
         }
       }
     },
-    () => {
+    (error) => {
+      // Catch and log location access denials or failures (New)
+      toggleAlertNotification(gpsAlert, true);
+
       if (!map) {
-        alert(
-          "Location access denied or timed out. Defaulting to fallback center coordinates.",
+        console.warn(
+          "GPS access blocked. Defaulting map to fallback coordinates setup.",
         );
-        // userCoords = { lat: 37.7749, lng: -122.4194 };
-        userCoords = { lat: 6.4474, lng: 3.3903 };
+        //  userCoords = { lat: 37.7749, lng: -122.4194 }; // San Francisco fallback
+        userCoords = { lat: 6.6392, lng: 3.3677 }; // Isheri fallback ,
         loadMap(userCoords.lat, userCoords.lng);
       }
     },
@@ -165,14 +171,27 @@ function initApp() {
 }
 
 function loadMap(lat, lng) {
+  // FIXED: zoomControl disabled here, we inject it below into the bottom-right corner instead
   map = L.map("map", { zoomControl: false }).setView([lat, lng], 15);
 
-  L.tileLayer(
+  // Reposition zoom handles to bottomright out of range-slider's way
+  L.control.zoom({ position: "bottomright" }).addTo(map);
+
+  const mainTileLayer = L.tileLayer(
     "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
     {
       attribution: "&copy; OpenStreetMap &copy; CARTO",
+      subdomains: "abcd",
+      maxZoom: 20,
     },
   ).addTo(map);
+
+  mainTileLayer.on("tileerror", () => {
+    map.removeLayer(mainTileLayer);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors",
+    }).addTo(map);
+  });
 
   userLocationMarker = L.marker([lat, lng], { icon: userIcon }).addTo(map);
 
@@ -183,9 +202,6 @@ function loadMap(lat, lng) {
     fillOpacity: 0.12,
     weight: 1.5,
   }).addTo(map);
-
-  // FIXED: Removed the map.on('click') line completely.
-  // Now, clicking empty map terrain will safely do nothing.
 
   userLocationMarker.on("click", (e) => {
     L.DomEvent.stopPropagation(e);
@@ -209,7 +225,7 @@ function computeDistance(lat1, lon1, lat2, lon2) {
 }
 
 async function fetchRestaurants() {
-  if (!supabaseClient) {
+  if (!supabaseClient || !navigator.onLine) {
     dbRestaurants = JSON.parse(localStorage.getItem("mock_restaurants")) || [];
     renderFilteredMarkers();
     return;
@@ -222,61 +238,43 @@ async function fetchRestaurants() {
     dbRestaurants = data || [];
     renderFilteredMarkers();
   } catch (err) {
-    console.error("Data pipeline broken:", err.message);
+    console.error("Data tracking pipeline extraction issue:", err.message);
   }
 }
 
 function renderFilteredMarkers() {
-  dynamicMarkersMap.forEach((m) => map.removeLayer(m));
-  dynamicMarkersMap = [];
   const maxRadius = parseInt(radiusSlider.value);
+  const currentVisibleIds = new Set();
 
   dbRestaurants.forEach((item) => {
     if (
       computeDistance(userCoords.lat, userCoords.lng, item.lat, item.lng) <=
       maxRadius
     ) {
-      const m = L.marker([item.lat, item.lng], { icon: restaurantIcon }).addTo(
-        map,
-      );
-      m.on("click", (e) => {
-        L.DomEvent.stopPropagation(e);
-        handleCoordinateSelection(item.lat, item.lng, item);
-      });
-      dynamicMarkersMap.push(m);
+      currentVisibleIds.add(item.id);
+
+      if (!activeMarkersMap.has(item.id)) {
+        const markerInstance = L.marker([item.lat, item.lng], {
+          icon: restaurantIcon,
+        }).addTo(map);
+        markerInstance.on("click", (e) => {
+          L.DomEvent.stopPropagation(e);
+          handleCoordinateSelection(item.lat, item.lng, item);
+        });
+        activeMarkersMap.set(item.id, markerInstance);
+      }
     }
   });
+
+  for (const [id, markerInstance] of activeMarkersMap.entries()) {
+    if (!currentVisibleIds.has(id)) {
+      map.removeLayer(markerInstance);
+      activeMarkersMap.delete(id);
+    }
+  }
 }
 
-// function handleCoordinateSelection(lat, lng, existingRecord = null) {
-//   selectedCoords = { lat, lng };
-//   document.getElementById("addRestaurantForm").classList.add("hidden");
-//   document.getElementById("viewRestaurantDetails").classList.add("hidden");
-
-//   if (!existingRecord) {
-//     existingRecord = dbRestaurants.find(
-//       (r) => Math.abs(r.lat - lat) < 0.0001 && Math.abs(r.lng - lng) < 0.0001,
-//     );
-//   }
-
-//   if (existingRecord) {
-//     activeRestaurantId = existingRecord.id;
-//     document.getElementById("modalTitle").innerText = existingRecord.name;
-//     document.getElementById("modalSub").innerText =
-//       existingRecord.address || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-//     document.getElementById("viewReviewText").innerText = existingRecord.review;
-//     document.getElementById("viewRestaurantDetails").classList.remove("hidden");
-//     fetchComments(activeRestaurantId);
-//   } else {
-//     activeRestaurantId = null;
-//     document.getElementById("modalTitle").innerText = "Add New Location";
-//     document.getElementById("modalSub").innerText =
-//       `Coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-//     document.getElementById("addRestaurantForm").reset();
-//     document.getElementById("addRestaurantForm").classList.remove("hidden");
-//   }
-//   openModal();
-// }
+// 6. MODAL SYSTEM DYNAMICS
 function handleCoordinateSelection(lat, lng, existingRecord = null) {
   selectedCoords = { lat, lng };
   document.getElementById("addRestaurantForm").classList.add("hidden");
@@ -295,23 +293,18 @@ function handleCoordinateSelection(lat, lng, existingRecord = null) {
       existingRecord.address || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
     document.getElementById("viewReviewText").innerText = existingRecord.review;
 
-    // Target insertion clean injection layer container element mapping
     const detailsContainer = document.getElementById("viewRestaurantDetails");
-
-    // Clear out any stale route action buttons before re-rendering
     const staleBtn = document.getElementById("modalNavBtn");
     if (staleBtn) staleBtn.remove();
 
-    // Inject the navigation button at the top of the details view state panel
     const navBtnHtml = `
-      <button id="modalNavBtn" class="w-full mb-2 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-medium py-2.5 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 transition-all text-sm">
+      <button id="modalNavBtn" class="w-full mb-2 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-medium py-2.5 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 transition-all text-sm cursor-pointer">
         <i data-lucide="navigation" class="w-4 h-4 fill-white"></i> Get Directions
       </button>
     `;
     detailsContainer.insertAdjacentHTML("afterbegin", navBtnHtml);
-    createIcons(); // Refresh Lucide icons for the newly injected element
+    createIcons(iconConfig);
 
-    // Bind execution handler routine to the new button
     document.getElementById("modalNavBtn").addEventListener("click", () => {
       drawNavigationRoute(existingRecord.lat, existingRecord.lng);
     });
@@ -333,7 +326,7 @@ async function fetchComments(restaurantId) {
   const container = document.getElementById("commentsContainer");
   container.innerHTML = `<p class="text-xs text-slate-400 animate-pulse">Gathering community inputs...</p>`;
 
-  if (!supabaseClient) {
+  if (!supabaseClient || !navigator.onLine) {
     const allComments = JSON.parse(localStorage.getItem("mock_comments")) || [];
     renderCommentsList(
       allComments.filter((c) => c.restaurant_id === restaurantId),
@@ -371,11 +364,19 @@ function renderCommentsList(comments) {
   container.scrollTop = container.scrollHeight;
 }
 
-// 4. LISTENERS & EVENTS
+// 7. FORM SUBMISSIONS WITH LOADING STATES
 document
   .getElementById("addRestaurantForm")
   .addEventListener("submit", async (e) => {
     e.preventDefault();
+
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    const originalText = submitBtn.innerText;
+
+    submitBtn.disabled = true;
+    submitBtn.innerText = "Saving Spot Data...";
+    submitBtn.classList.add("opacity-70", "cursor-not-allowed");
+
     const payload = {
       name: document.getElementById("restName").value,
       address: document.getElementById("restAddress").value,
@@ -384,23 +385,26 @@ document
       lng: selectedCoords.lng,
     };
 
-    if (!supabaseClient) {
-      payload.id = crypto.randomUUID();
-      dbRestaurants.push(payload);
-      localStorage.setItem("mock_restaurants", JSON.stringify(dbRestaurants));
-      closeModal();
-      fetchRestaurants();
-      return;
-    }
     try {
-      const { error } = await supabaseClient
-        .from("restaurants")
-        .insert([payload]);
-      if (error) throw error;
+      if (!supabaseClient || !navigator.onLine) {
+        payload.id = crypto.randomUUID();
+        dbRestaurants.push(payload);
+        localStorage.setItem("mock_restaurants", JSON.stringify(dbRestaurants));
+      } else {
+        const { error } = await supabaseClient
+          .from("restaurants")
+          .insert([payload]);
+        if (error) throw error;
+      }
+
       closeModal();
-      fetchRestaurants();
+      await fetchRestaurants();
     } catch (err) {
-      alert(err.message);
+      alert("Write operation error: " + err.message);
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.innerText = originalText;
+      submitBtn.classList.remove("opacity-70", "cursor-not-allowed");
     }
   });
 
@@ -409,31 +413,40 @@ document
   .addEventListener("submit", async (e) => {
     e.preventDefault();
     const inputEl = document.getElementById("newCommentText");
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+
+    submitBtn.disabled = true;
+    submitBtn.classList.add("opacity-50");
+
     const payload = {
       restaurant_id: activeRestaurantId,
       comment: inputEl.value,
     };
 
-    if (!supabaseClient) {
-      payload.id = crypto.randomUUID();
-      payload.created_at = new Date().toISOString();
-      const mockC = JSON.parse(localStorage.getItem("mock_comments")) || [];
-      mockC.push(payload);
-      localStorage.setItem("mock_comments", JSON.stringify(mockC));
-      inputEl.value = "";
-      fetchComments(activeRestaurantId);
-      return;
-    }
     try {
-      const { error } = await supabaseClient.from("comments").insert([payload]);
-      if (error) throw error;
+      if (!supabaseClient || !navigator.onLine) {
+        payload.id = crypto.randomUUID();
+        payload.created_at = new Date().toISOString();
+        const mockC = JSON.parse(localStorage.getItem("mock_comments")) || [];
+        mockC.push(payload);
+        localStorage.setItem("mock_comments", JSON.stringify(mockC));
+      } else {
+        const { error } = await supabaseClient
+          .from("comments")
+          .insert([payload]);
+        if (error) throw error;
+      }
       inputEl.value = "";
-      fetchComments(activeRestaurantId);
+      await fetchComments(activeRestaurantId);
     } catch (err) {
       alert(err.message);
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.classList.remove("opacity-50");
     }
   });
 
+// 8. INTERFACE LISTENERS
 radiusSlider.addEventListener("input", (e) => {
   const val = e.target.value;
   radiusVal.innerText =
@@ -452,22 +465,84 @@ function closeModal() {
   modal.classList.remove("opacity-100");
   modal.classList.add("opacity-0");
   modalContent.classList.add("translate-y-full");
-
-  // Wait for the slide-down animation to complete before turning off pointer events
-  setTimeout(() => {
-    modal.classList.add("pointer-events-none");
-  }, 300);
+  setTimeout(() => modal.classList.add("pointer-events-none"), 300);
 }
 
-// Bind close event behaviors to both the X button AND clicking the overlay background itself
 document.getElementById("closeModalBtn").addEventListener("click", closeModal);
 modal.addEventListener("click", (e) => {
-  if (e.target === modal) {
-    closeModal();
-  }
+  if (e.target === modal) closeModal();
 });
 
-// FAB / Panel Carousel Logic
+// function drawNavigationRoute(targetLat, targetLng) {
+//   if (activeRoutingLine) {
+//     map.removeLayer(activeRoutingLine);
+//   }
+
+//   const pointsArray = [
+//     [userCoords.lat, userCoords.lng],
+//     [targetLat, targetLng],
+//   ];
+
+//   activeRoutingLine = L.polyline(pointsArray, {
+//     color: "#2563eb",
+//     weight: 4,
+//     opacity: 0.8,
+//     dashArray: "10, 8",
+//     lineCap: "round",
+//   }).addTo(map);
+
+//   closeModal();
+//   map.fitBounds(activeRoutingLine.getBounds(), {
+//     padding: [60, 60],
+//     maxZoom: 16,
+//   });
+// }
+function drawNavigationRoute(targetLat, targetLng) {
+  // 1. Calculate the distance between the user and the restaurant first
+  const distanceToTarget = computeDistance(
+    userCoords.lat,
+    userCoords.lng,
+    targetLat,
+    targetLng,
+  );
+
+  // 2. If the user is closer than 5 meters, they are already there!
+  if (distanceToTarget < 5) {
+    closeModal();
+
+    // Smoothly pan to the spot instead of jarringly zooming in
+    map.panTo([targetLat, targetLng]);
+
+    alert("📍 You've arrived! You are currently at this establishment.");
+    return; // Halt execution so we don't draw a 0-meter line
+  }
+
+  // 3. Otherwise, proceed with drawing the route as normal
+  if (activeRoutingLine) {
+    map.removeLayer(activeRoutingLine);
+  }
+
+  const pointsArray = [
+    [userCoords.lat, userCoords.lng],
+    [targetLat, targetLng],
+  ];
+
+  activeRoutingLine = L.polyline(pointsArray, {
+    color: "#2563eb",
+    weight: 4,
+    opacity: 0.8,
+    dashArray: "10, 8",
+    lineCap: "round",
+  }).addTo(map);
+
+  closeModal();
+  map.fitBounds(activeRoutingLine.getBounds(), {
+    padding: [60, 60],
+    maxZoom: 16,
+  });
+}
+
+// CAROUSEL DISPLAY HANDLERS
 document.getElementById("fabBtn").addEventListener("click", () => {
   const panel = document.getElementById("carouselPanel");
   panel.classList.toggle("hidden");
@@ -501,38 +576,6 @@ function escapeHTML(str) {
         t
       ] || t,
   );
-}
-
-function drawNavigationRoute(targetLat, targetLng) {
-  // 1. Wipe out any active path lines currently rendering on the canvas
-  if (activeRoutingLine) {
-    map.removeLayer(activeRoutingLine);
-    activeRoutingLine = null;
-  }
-
-  // 2. Generate a Leaflet polyline layer array matching coordinates metrics points
-  const pointsArray = [
-    [userCoords.lat, userCoords.lng],
-    [targetLat, targetLng],
-  ];
-
-  // 3. Create and style the path line
-  activeRoutingLine = L.polyline(pointsArray, {
-    color: "#2563eb", // Tailwind blue-600 color match theme profile
-    weight: 4, // Line thickness
-    opacity: 0.8, // Transparency profile
-    dashArray: "10, 8", // Creates a clean, modern dashed navigation effect
-    lineCap: "round",
-  }).addTo(map);
-
-  // 4. Dismiss modal to show the route map layout
-  closeModal();
-
-  // 5. Adjust the map bounds to neatly fit the entire route on screen
-  map.fitBounds(activeRoutingLine.getBounds(), {
-    padding: [60, 60], // Safe margin spacing in pixels around screen boundaries
-    maxZoom: 16, // Prevents over-zooming on exceptionally short routes
-  });
 }
 
 window.onload = initApp;
