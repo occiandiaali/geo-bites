@@ -175,7 +175,7 @@ function loadMap(lat, lng) {
   map = L.map("map", { zoomControl: false }).setView([lat, lng], 15);
 
   // Reposition zoom handles to bottomright out of range-slider's way
-  L.control.zoom({ position: "bottomright" }).addTo(map);
+  L.control.zoom({ position: "bottomleft" }).addTo(map);
 
   const mainTileLayer = L.tileLayer(
     "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",

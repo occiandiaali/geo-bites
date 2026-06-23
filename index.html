@@ -7,7 +7,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
-    <title>FindFoodAroundMe</title>
+    <title>WhereToEatNearMe</title>
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -16,7 +16,7 @@
   <body class="bg-slate-50 font-sans text-slate-800 antialiased">
     <div
       id="statusNotificationBar"
-      class="fixed top-20 left-4 right-4 z-[2000] flex flex-col gap-2 pointer-events-none"
+      class="fixed top-20 left-4 right-4 z-2000 flex flex-col gap-2 pointer-events-none"
     >
       <div
         id="offlineAlert"
@@ -38,13 +38,13 @@
     </div>
 
     <header
-      class="fixed top-4 left-4 right-4 z-[1000] flex justify-between items-center bg-white/90 backdrop-blur-md px-4 py-3 rounded-2xl shadow-lg border border-slate-200/50"
+      class="fixed top-4 left-4 right-4 z-1000 flex justify-between items-center bg-white/90 backdrop-blur-md px-4 py-3 rounded-2xl shadow-lg border border-slate-200/50"
     >
       <h1
-        class="text-xl font-bold tracking-tight text-slate-900 flex items-center gap-2"
+        class="text-lg font-bold tracking-tight text-slate-900 flex items-center gap-2"
       >
         <i data-lucide="map-pin" class="text-emerald-500 w-5 h-5"></i>
-        FindFoodAroundMe
+        WhereToEatNearMe
       </h1>
       <button
         id="fabBtn"
@@ -56,7 +56,7 @@
 
     <div
       id="carouselPanel"
-      class="fixed top-20 right-4 z-[1000] w-72 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200/60 p-4 transform translate-x-[120%] transition-transform duration-300 ease-out hidden"
+      class="fixed top-20 right-4 z-1000 w-72 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200/60 p-4 transform translate-x-[120%] transition-transform duration-300 ease-out hidden"
     >
       <div class="flex justify-between items-center mb-3">
         <h3 class="font-semibold text-slate-700">Featured Spots</h3>
@@ -77,7 +77,7 @@
           <div
             class="min-w-full h-full flex flex-col justify-center items-center p-4 text-center bg-emerald-50 text-emerald-800"
           >
-            <p class="font-bold text-sm">Welcome to FindFoodAroundMe!</p>
+            <p class="font-bold text-sm">Welcome to WhereToEatNearMe!</p>
             <p class="text-xs mt-1 text-emerald-600">
               Discover local flavor hubs around you in real time.
             </p>
@@ -109,7 +109,7 @@
     <div id="map" class="h-screen w-screen z-1"></div>
 
     <div
-      class="fixed bottom-6 left-4 right-16 z-[1000] bg-white/90 backdrop-blur-md p-4 rounded-2xl shadow-xl border border-slate-200/50 flex flex-col gap-2 transition-all mr-2"
+      class="fixed bottom-10 left-12 right-8 z-1000 bg-transparent backdrop-blur-md p-4 rounded-2xl shadow-xl border border-slate-200/50 flex flex-col gap-2 transition-all mr-2"
     >
       <div class="flex justify-between items-center">
         <span
@@ -135,7 +135,7 @@
 
     <div
       id="restaurantModal"
-      class="fixed inset-0 z-[2000] bg-slate-900/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 opacity-0 pointer-events-none transition-opacity duration-200"
+      class="fixed inset-0 z-2000 bg-slate-900/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 opacity-0 pointer-events-none transition-opacity duration-200"
     >
       <div
         class="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85vh] sm:max-h-[90vh] transform translate-y-full sm:translate-y-0 transition-transform duration-300"
